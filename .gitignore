@@ -1,0 +1,12 @@
+.DS_Store
+*.o
+*.d
+*.a
+*.out
+core
+browser
+browser-gui
+*.dSYM
+*.gcno
+*.gcda
+*.gcov

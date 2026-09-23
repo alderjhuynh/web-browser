@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html><head><style>
+  body { color: #333; font-family: Helvetica; }
+  /* simple comment */
+  h1 { font-size: 32px; color: red; }
+  p.note { background: #ffff99; }
+  div p { color: green; } /* descendant */
+  p::before { content: "ignored pseudo"; }
+</style></head>
+<body id="main">
+  <h1>Test &amp; Demo - entities: &#169; &#x1F600;</h1>
+  <!-- comment should be ignored -->
+  <p class="note" style="color: blue;">Hello <b>bold</b> &lt;world&gt; and <i>italic</i></p>
+  <p>Paragraph with <a href="#">link</a> and<br>break plus <img src="x.png" alt="bool attr test" disabled></p>
+  <div><p>Nested <span>inline <b>deep</b></span> text</p></div>
+  <ul><li>one</li><li>two</li><li>three</li></ul>
+  <!-- malformed: unclosed tags and missing > -->
+  <div><p>Unclosed paragraph<div>next div
+  <hr>
+  <script>var bad = "<div>should not parse</div>";</script>
+  <svg><circle cx="50"/></svg>
+<![CDATA[ cdata as text ]]>
+</body></html>
