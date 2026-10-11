@@ -8,6 +8,7 @@
 #include "fetch.h"
 #include "layout.h"
 #include "gui.h"
+#include "search.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,13 +76,9 @@ static char *cli_make_mojeek_url(const char *query){
 }
 static bool cli_is_mojeek_query(const char *q, const char **out_rest);
 static char *cli_make_search_url(const char *query){
-
     const char *rest=NULL;
     if(cli_is_mojeek_query(query, &rest)) return cli_make_mojeek_url(rest);
-    char *enc=cli_url_encode(query);
-    char *u=(char*)xmalloc(strlen(enc)+64);
-    sprintf(u,"https://html.duckduckgo.com/html/?q=%s",enc);
-    free(enc); return u;
+    return search_build_url(query);
 }
 static bool cli_is_mojeek_query(const char *q, const char **out_rest){
     if(!q) return false;

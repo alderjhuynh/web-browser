@@ -9,6 +9,7 @@
 #include "color.h"
 #include "layout.h"
 #include "image.h"
+#include "search.h"
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -46,6 +47,7 @@ typedef struct {
     char *text;
     int  font_size;
     bool bold, italic, mono, underline;
+    bool glue;
     SDL_Color color;
     SDL_Color bg;
     char *href;
@@ -53,60 +55,69 @@ typedef struct {
     int tex_w, tex_h;
 } GuiCmd;
 
-#define FONT_CACHE 64
-typedef struct { int size; bool bold, italic, mono; TTF_Font *font; } FontCacheEnt;
+#define FONT_CACHE 256
+typedef struct { int px; bool bold, italic, mono; TTF_Font *font; } FontCacheEnt;
 static FontCacheEnt g_font_cache[FONT_CACHE];
 static int g_font_cache_n = 0;
-static char g_font_regular_path[512] = {0};
-static char g_font_mono_path[512] = {0};
+
+static float g_dpi = 1.0f;
+
+typedef struct { const char *path[4]; int idx[4]; } FontFam;
+#define FF(r,b,i,bi) {{r,b,i,bi},{0,0,0,0}}
+static const FontFam SANS_FAMS[] = {
+    FF("/System/Library/Fonts/Supplemental/Arial.ttf","/System/Library/Fonts/Supplemental/Arial Bold.ttf","/System/Library/Fonts/Supplemental/Arial Italic.ttf","/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"),
+    FF("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf","/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf","/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf","/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf"),
+    FF("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf","/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf","/usr/share/fonts/truetype/noto/NotoSans-Italic.ttf","/usr/share/fonts/truetype/noto/NotoSans-BoldItalic.ttf"),
+    FF("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf","/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf","/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf","/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf"),
+    FF("/usr/share/fonts/TTF/DejaVuSans.ttf","/usr/share/fonts/TTF/DejaVuSans-Bold.ttf","/usr/share/fonts/TTF/DejaVuSans-Oblique.ttf","/usr/share/fonts/TTF/DejaVuSans-BoldOblique.ttf"),
+    FF("/System/Library/Fonts/Supplemental/Verdana.ttf","/System/Library/Fonts/Supplemental/Verdana Bold.ttf","/System/Library/Fonts/Supplemental/Verdana Italic.ttf","/System/Library/Fonts/Supplemental/Verdana Bold Italic.ttf"),
+    FF("/opt/homebrew/share/fonts/DejaVuSans.ttf",NULL,NULL,NULL),
+};
+static const FontFam MONO_FAMS[] = {
+    {{"/System/Library/Fonts/Menlo.ttc","/System/Library/Fonts/Menlo.ttc","/System/Library/Fonts/Menlo.ttc","/System/Library/Fonts/Menlo.ttc"},{0,1,2,3}},
+    FF("/System/Library/Fonts/Supplemental/Courier New.ttf","/System/Library/Fonts/Supplemental/Courier New Bold.ttf","/System/Library/Fonts/Supplemental/Courier New Italic.ttf","/System/Library/Fonts/Supplemental/Courier New Bold Italic.ttf"),
+    FF("/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf","/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf","/usr/share/fonts/truetype/liberation/LiberationMono-Italic.ttf","/usr/share/fonts/truetype/liberation/LiberationMono-BoldItalic.ttf"),
+    FF("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf","/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf","/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf","/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf"),
+    FF("/usr/share/fonts/TTF/DejaVuSansMono.ttf","/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf","/usr/share/fonts/TTF/DejaVuSansMono-Oblique.ttf","/usr/share/fonts/TTF/DejaVuSansMono-BoldOblique.ttf"),
+};
+static const FontFam *g_sans = NULL, *g_mono = NULL;
+
+static bool file_exists(const char *p){ if(!p) return false; FILE *f=fopen(p,"rb"); if(f){ fclose(f); return true; } return false; }
 static void gui_find_font_paths(void) {
-    if (g_font_regular_path[0]) return;
-    const char *candidates[] = {
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/System/Library/Fonts/Supplemental/Verdana.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/System/Library/Fonts/HelveticaNeue.ttc",
-        "/System/Library/Fonts/SFNS.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/opt/homebrew/share/fonts/DejaVuSans.ttf",
-        NULL
-    };
-    for (int i=0;candidates[i];i++) { FILE *f=fopen(candidates[i],"rb"); if(f){ fclose(f); strncpy(g_font_regular_path,candidates[i],sizeof(g_font_regular_path)-1); break; } }
-    if (!g_font_regular_path[0]) strncpy(g_font_regular_path,"/System/Library/Fonts/Supplemental/Arial.ttf",sizeof(g_font_regular_path)-1);
-    const char *mono_cands[] = {
-        "/System/Library/Fonts/Courier.dfont",
-        "/System/Library/Fonts/Courier.ttc",
-        "/System/Library/Fonts/Courier New.ttf",
-        "/System/Library/Fonts/Supplemental/Courier New.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "/System/Library/Fonts/SFNSMono.ttf",
-        NULL
-    };
-    for(int i=0;mono_cands[i];i++){ FILE*f=fopen(mono_cands[i],"rb"); if(f){ fclose(f); strncpy(g_font_mono_path,mono_cands[i],sizeof(g_font_mono_path)-1); break; } }
-    if(!g_font_mono_path[0]) strncpy(g_font_mono_path,g_font_regular_path,sizeof(g_font_mono_path)-1);
+    if (g_sans) return;
+    for(size_t i=0;i<sizeof(SANS_FAMS)/sizeof(SANS_FAMS[0]);i++) if(file_exists(SANS_FAMS[i].path[0])){ g_sans=&SANS_FAMS[i]; break; }
+    for(size_t i=0;i<sizeof(MONO_FAMS)/sizeof(MONO_FAMS[0]);i++) if(file_exists(MONO_FAMS[i].path[0])){ g_mono=&MONO_FAMS[i]; break; }
+    if(!g_sans) g_sans=&SANS_FAMS[0];
+    if(!g_mono) g_mono=g_sans;
 }
-static TTF_Font *gui_get_font(int sz, bool bold, bool italic, bool mono){
-    if(sz<8) sz=8; if(sz>72) sz=72;
-    for(int i=0;i<g_font_cache_n;i++) if(g_font_cache[i].size==sz && g_font_cache[i].bold==bold && g_font_cache[i].italic==italic && g_font_cache[i].mono==mono) return g_font_cache[i].font;
+static TTF_Font *gui_get_font_px(int px, bool bold, bool italic, bool mono){
+    if(px<8) px=8;
+    if(px>288) px=288;
+    for(int i=0;i<g_font_cache_n;i++) if(g_font_cache[i].px==px && g_font_cache[i].bold==bold && g_font_cache[i].italic==italic && g_font_cache[i].mono==mono) return g_font_cache[i].font;
     if(g_font_cache_n>=FONT_CACHE) return g_font_cache[0].font;
     gui_find_font_paths();
-    const char *path = mono? g_font_mono_path : g_font_regular_path;
-    TTF_Font *f = TTF_OpenFont(path, sz);
-    if(!f){
-
-        if(mono) f = TTF_OpenFont(g_font_regular_path, sz);
-        if(!f) f = TTF_OpenFont("/System/Library/Fonts/Supplemental/Arial.ttf", sz);
-        if(!f) return NULL;
+    const FontFam *fam = mono ? g_mono : g_sans;
+    int want = (bold?1:0) | (italic?2:0);
+    int v = want;
+    bool synth_b = false, synth_i = false;
+    if(!file_exists(fam->path[v])){
+        v = 0; synth_b = bold; synth_i = italic;
+        if(want==3 && file_exists(fam->path[1])){ v=1; synth_b=false; synth_i=true; }
+        else if(want==3 && file_exists(fam->path[2])){ v=2; synth_b=true; synth_i=false; }
     }
+    TTF_Font *f = TTF_OpenFontIndex(fam->path[v], px, fam->idx[v]);
+    if(!f && v!=0) { f = TTF_OpenFontIndex(fam->path[0], px, fam->idx[0]); synth_b=bold; synth_i=italic; }
+    if(!f) return NULL;
     int style = TTF_STYLE_NORMAL;
-    if(bold) style|=TTF_STYLE_BOLD;
-    if(italic) style|=TTF_STYLE_ITALIC;
-    if(mono) {}
+    if(synth_b) style|=TTF_STYLE_BOLD;
+    if(synth_i) style|=TTF_STYLE_ITALIC;
     TTF_SetFontStyle(f, style);
-    g_font_cache[g_font_cache_n++] = (FontCacheEnt){sz,bold,italic,mono,f};
+    TTF_SetFontHinting(f, g_dpi > 1.01f ? TTF_HINTING_NONE : TTF_HINTING_LIGHT);
+    g_font_cache[g_font_cache_n++] = (FontCacheEnt){px,bold,italic,mono,f};
     return f;
 }
+static TTF_Font *gui_get_font(int sz, bool bold, bool italic, bool mono){ return gui_get_font_px(sz,bold,italic,mono); }
+static TTF_Font *gui_get_render_font(int sz, bool bold, bool italic, bool mono){ return gui_get_font_px((int)lroundf(sz*g_dpi),bold,italic,mono); }
 static void gui_free_fonts(void){
     for(int i=0;i<g_font_cache_n;i++) TTF_CloseFont(g_font_cache[i].font);
     g_font_cache_n=0;
@@ -130,6 +141,7 @@ static bool is_light(SDL_Color c){ return (0.299*c.r+0.587*c.g+0.114*c.b)>160; }
 typedef struct BrowserState BrowserState;
 
 typedef struct {
+    bool pending_space;
     int win_w, win_h;
     int content_x, content_y, content_w, content_h;
     int cur_x, cur_y;
@@ -160,6 +172,7 @@ static void lctx_init(LayoutCtx *c,int win_w,int win_h){
     c->cur_y = c->content_y;
     c->cur_line_h = 0; c->cur_line_ascent=0; c->cur_line_descent=0;
     c->left_pad = GUI_CONTENT_PAD;
+    c->pending_space = true;
 }
 static void lctx_free(LayoutCtx *c){
     for(size_t i=0;i<c->ncmd;i++){ free(c->cmds[i].text); free(c->cmds[i].href); if(c->cmds[i].tex && c->cmds[i].type!=GCMD_IMAGE) SDL_DestroyTexture(c->cmds[i].tex); }
@@ -187,7 +200,7 @@ static void lctx_flush(LayoutCtx *c){
     int total_w=0;
     for(size_t i=0;i<c->nline;i++){
         total_w += c->line[i].w;
-        if(i+1<c->nline){
+        if(i+1<c->nline && !c->line[i+1].glue){
             TTF_Font *ff=gui_get_font(c->line[i].font_size,c->line[i].bold,c->line[i].italic,c->line[i].mono);
             int sw=4; if(ff) TTF_SizeUTF8(ff," ",&sw,NULL); else sw=c->line[i].font_size/3;
             total_w+=sw;
@@ -216,17 +229,18 @@ static void lctx_flush(LayoutCtx *c){
         c->cmds[c->ncmd++] = c->line[i];
         int space_w=4;
         TTF_Font *sf=f; if(sf){ TTF_SizeUTF8(sf," ",&space_w,NULL); } else space_w = c->line[i].font_size/3;
-        if(i+1 < c->nline) x += c->line[i].w + space_w;
+        if(i+1 < c->nline && !c->line[i+1].glue) x += c->line[i].w + space_w;
         else x += c->line[i].w;
     }
 
     c->nline=0;
+    c->pending_space = true;
     c->cur_x = c->content_x + c->indent;
     c->cur_y += line_h + 4;
     c->cur_line_h=0; c->cur_line_ascent=0; c->cur_line_descent=0;
 }
 
-static void lctx_emit_word(LayoutCtx *c, const char *word, Node *parent_elem){
+static void lctx_emit_word(LayoutCtx *c, const char *word, Node *parent_elem, bool glue){
     const char *color_s = parent_elem? node_style_get(parent_elem,"color"): NULL;
     const char *bg_s = parent_elem? node_style_get(parent_elem,"background-color"): NULL;
     if(!bg_s) bg_s = parent_elem? node_style_get(parent_elem,"background"): NULL;
@@ -261,7 +275,11 @@ static void lctx_emit_word(LayoutCtx *c, const char *word, Node *parent_elem){
 
     int line_x = c->content_x + c->indent;
     int cur_line_used = 0;
-    for(size_t i=0;i<c->nline;i++) cur_line_used += c->line[i].w + space_w;
+    for(size_t i=0;i<c->nline;i++){
+        cur_line_used += c->line[i].w;
+        if(i+1<c->nline && !c->line[i+1].glue) cur_line_used += space_w;
+    }
+    if(c->nline>0 && !glue) cur_line_used += space_w;
     if(c->nline>0 && line_x + cur_line_used + w > c->content_x + c->content_w){
         lctx_flush(c);
         line_x = c->content_x + c->indent;
@@ -269,7 +287,7 @@ static void lctx_emit_word(LayoutCtx *c, const char *word, Node *parent_elem){
     }
 
     GuiCmd cmd={0};
-    cmd.type=GCMD_TEXT; cmd.text=xstrdup(word); cmd.font_size=fs; cmd.bold=bold; cmd.italic=italic; cmd.mono=mono; cmd.underline=underline; cmd.color=col; cmd.href=href_dup; cmd.w=w; cmd.h=h;
+    cmd.type=GCMD_TEXT; cmd.text=xstrdup(word); cmd.font_size=fs; cmd.bold=bold; cmd.italic=italic; cmd.mono=mono; cmd.underline=underline; cmd.color=col; cmd.href=href_dup; cmd.w=w; cmd.h=h; cmd.glue=glue && c->nline>0;
 
     (void)bg_s;
     if(c->nline==0){
@@ -1165,7 +1183,7 @@ static void layout_node_recursive(Node *n, LayoutCtx *c){
 
                 if(line[0]){
 
-                    lctx_emit_word(c, line, pe);
+                    lctx_emit_word(c, line, pe, false);
                 }
                 lctx_flush(c);
                 line = strtok(NULL,"\n");
@@ -1175,16 +1193,21 @@ static void layout_node_recursive(Node *n, LayoutCtx *c){
         }
 
         const char *p=txt;
+        bool first_word=true;
         while(*p){
             while(*p && isspace((unsigned char)*p)) p++;
             if(!*p) break;
             const char *wstart=p;
+            bool glue = first_word && !c->pending_space && wstart==txt;
             while(*p && !isspace((unsigned char)*p)) p++;
             size_t wl = p - wstart;
             char *word = xstrndup(wstart,wl);
-            lctx_emit_word(c, word, pe);
+            lctx_emit_word(c, word, pe, glue);
             free(word);
+            first_word=false;
+            c->pending_space = false;
         }
+        if(*txt && isspace((unsigned char)txt[strlen(txt)-1])) c->pending_space = true;
         return;
     }
     if(n->type==NODE_DOCUMENT){
@@ -1505,10 +1528,7 @@ static char *make_search_url(const char *query){
     if(is_mojeek_image_query(query, &rest)){
         return make_mojeek_image_search_url(rest);
     }
-    char *enc=url_encode(query);
-    char *u=(char*)xmalloc(strlen(enc)+64);
-    sprintf(u,"https://html.duckduckgo.com/html/?q=%s",enc);
-    free(enc); return u;
+    return search_build_url(query);
 }
 static void addr_set_text(BrowserState *b,const char *s){
     size_t n=strlen(s);
@@ -1723,8 +1743,88 @@ static SDL_Rect addr_rect(BrowserState *b){
 }
 static bool point_in_rect(int x,int y, SDL_Rect r){ return x>=r.x && x<r.x+r.w && y>=r.y && y<r.y+r.h; }
 
+
+static void fill_rrect(SDL_Renderer *ren, float x, float y, float w, float h, float r, SDL_Color c){
+    if(r > h/2) r = h/2;
+    if(r > w/2) r = w/2;
+    SDL_SetRenderDrawColor(ren,c.r,c.g,c.b,c.a?c.a:255);
+    float step = 1.0f / g_dpi;
+    for(float dy=0; dy<h; dy+=step){
+        float cy = dy + step/2, inset = 0;
+        if(cy < r)        { float t = r - cy;     inset = r - sqrtf(fmaxf(0.f, r*r - t*t)); }
+        else if(cy > h-r) { float t = cy-(h-r);   inset = r - sqrtf(fmaxf(0.f, r*r - t*t)); }
+        SDL_FRect row = { x + inset, y + dy, w - 2*inset, step };
+        SDL_RenderFillRectF(ren,&row);
+    }
+}
+static void stroke_rrect(SDL_Renderer *ren, float x,float y,float w,float h,float r,float t,SDL_Color border,SDL_Color inner){
+    fill_rrect(ren,x,y,w,h,r,border);
+    fill_rrect(ren,x+t,y+t,w-2*t,h-2*t,fmaxf(0.f,r-t),inner);
+}
+static void thick_line(SDL_Renderer *ren,float x1,float y1,float x2,float y2,float th,SDL_Color c){
+    SDL_SetRenderDrawColor(ren,c.r,c.g,c.b,255);
+    float dx=x2-x1, dy=y2-y1, len=sqrtf(dx*dx+dy*dy); if(len<0.001f) return;
+    float nx=-dy/len, ny=dx/len, step=1.0f/g_dpi;
+    for(float o=-th/2; o<=th/2+0.001f; o+=step) SDL_RenderDrawLineF(ren,x1+nx*o,y1+ny*o,x2+nx*o,y2+ny*o);
+}
+static void icon_chevron(SDL_Renderer *ren,float cx,float cy,int dir,SDL_Color c){
+    float s=5.5f, tip=cx+dir*s*0.5f, arm=tip-dir*s;
+    thick_line(ren,arm,cy-s,tip,cy,1.8f,c);
+    thick_line(ren,tip,cy,arm,cy+s,1.8f,c);
+}
+static void icon_reload(SDL_Renderer *ren,float cx,float cy,SDL_Color c){
+    float r=6.5f; const float a0=-50*3.14159265f/180, a1=240*3.14159265f/180;
+    int seg=24; float px=cx+r*cosf(a0), py=cy+r*sinf(a0);
+    for(int i=1;i<=seg;i++){
+        float a=a0+(a1-a0)*i/seg, x=cx+r*cosf(a), y=cy+r*sinf(a);
+        thick_line(ren,px,py,x,y,1.8f,c); px=x; py=y;
+    }
+    float hx=cx+r*cosf(a0), hy=cy+r*sinf(a0);
+    thick_line(ren,hx,hy,hx+5.5f,hy-0.5f,1.8f,c);
+    thick_line(ren,hx,hy,hx+0.5f,hy+5.5f,1.8f,c);
+}
+static int draw_text(SDL_Renderer *ren,const char *text,int sz,bool bold,SDL_Color col,float x,float y,float center_in_w,float center_in_h){
+    if(!text||!*text) return 0;
+    TTF_Font *f=gui_get_render_font(sz,bold,false,false);
+    if(!f) return 0;
+    SDL_Surface *s=TTF_RenderUTF8_Blended(f,text,col);
+    if(!s) return 0;
+    SDL_Texture *t=SDL_CreateTextureFromSurface(ren,s);
+    float w=s->w/g_dpi, h=s->h/g_dpi;
+    SDL_FRect dst={ center_in_w>0? x+(center_in_w-w)/2 : x, center_in_h>0? y+(center_in_h-h)/2 : y, w, h };
+    if(t){ SDL_RenderCopyF(ren,t,NULL,&dst); SDL_DestroyTexture(t); }
+    SDL_FreeSurface(s);
+    return (int)(w+0.5f);
+}
+static int text_width(const char *text,int sz,bool bold){
+    TTF_Font *f=gui_get_font(sz,bold,false,false); int w=0;
+    if(f && text) TTF_SizeUTF8(f,text,&w,NULL);
+    return w;
+}
+static void free_text_textures(BrowserState *b){
+    for(size_t i=0;i<b->lctx.ncmd;i++){
+        GuiCmd *c=&b->lctx.cmds[i];
+        if(c->type==GCMD_TEXT && c->tex){ SDL_DestroyTexture(c->tex); c->tex=NULL; }
+    }
+}
+static void browser_relayout(BrowserState *b);
+static void update_dpi(BrowserState *b){
+    int ow=0,oh=0; SDL_GetRendererOutputSize(b->ren,&ow,&oh);
+    float d = (b->win_w>0 && ow>0) ? (float)ow/(float)b->win_w : 1.0f;
+    if(d<1.0f) d=1.0f;
+    bool changed = fabsf(d-g_dpi)>0.01f;
+    if(changed){
+        g_dpi=d;
+        free_text_textures(b);
+        gui_free_fonts();
+    }
+    SDL_RenderSetScale(b->ren,g_dpi,g_dpi);
+    if(changed && b->root) browser_relayout(b);
+}
+
 static void render_browser(BrowserState *b){
     SDL_Renderer *ren=b->ren;
+    update_dpi(b);
 
     SDL_SetRenderDrawColor(ren,255,255,255,255);
     SDL_RenderClear(ren);
@@ -1744,79 +1844,55 @@ static void render_browser(BrowserState *b){
         }
     }
 
+    const SDL_Color C_BAR   ={241,243,244,255}, C_LINE={218,220,224,255}, C_ICON={60,64,67,255},
+                    C_ICON_OFF={189,193,198,255}, C_PILL={233,236,240,255}, C_BLUE={26,115,232,255},
+                    C_WHITE={255,255,255,255}, C_TEXT={32,33,36,255}, C_HINT={128,134,139,255};
     SDL_Rect toolbar={0,0,b->win_w,GUI_TOOLBAR_H};
-    SDL_SetRenderDrawColor(ren, 225,228,232,255);
+    SDL_SetRenderDrawColor(ren, C_BAR.r,C_BAR.g,C_BAR.b,255);
     SDL_RenderFillRect(ren,&toolbar);
-    SDL_SetRenderDrawColor(ren,200,200,200,255);
-    SDL_RenderDrawLine(ren,0,GUI_TOOLBAR_H, b->win_w, GUI_TOOLBAR_H);
+    SDL_SetRenderDrawColor(ren,C_LINE.r,C_LINE.g,C_LINE.b,255);
+    SDL_RenderDrawLine(ren,0,GUI_TOOLBAR_H-1, b->win_w, GUI_TOOLBAR_H-1);
 
-    struct { SDL_Rect r; const char *label; } btns[4];
-    btns[0].r=(SDL_Rect){8,6,GUI_BTN_W, GUI_TOOLBAR_H-12}; btns[0].label="<";
-    btns[1].r=(SDL_Rect){8+GUI_BTN_W+GUI_BTN_GAP,6,GUI_BTN_W, GUI_TOOLBAR_H-12}; btns[1].label=">";
-    btns[2].r=(SDL_Rect){8+2*(GUI_BTN_W+GUI_BTN_GAP),6,GUI_BTN_W, GUI_TOOLBAR_H-12}; btns[2].label="\xE2\x86\xBB";
+    float bcy = GUI_TOOLBAR_H/2.0f - 0.5f;
+    float bx0 = 8 + GUI_BTN_W/2.0f;
+    icon_chevron(ren, bx0 + 2,                        bcy, -1, b->back_n? C_ICON : C_ICON_OFF);
+    icon_chevron(ren, bx0 + (GUI_BTN_W+GUI_BTN_GAP) - 2, bcy,  1, b->fwd_n ? C_ICON : C_ICON_OFF);
+    icon_reload (ren, bx0 + 2*(GUI_BTN_W+GUI_BTN_GAP),   bcy, C_ICON);
 
     SDL_Rect ar = addr_rect(b);
-    btns[3].r=(SDL_Rect){ar.x+ar.w+8,6,52, GUI_TOOLBAR_H-12}; btns[3].label="Go";
-    for(int i=0;i<4;i++){
-        SDL_SetRenderDrawColor(ren, 250,250,250,255);
-        SDL_RenderFillRect(ren,&btns[i].r);
-        SDL_SetRenderDrawColor(ren,180,180,180,255);
-        SDL_RenderDrawRect(ren,&btns[i].r);
-        TTF_Font *bf = gui_get_font(14,true,false,false);
-        if(bf){
-            SDL_Color col={50,50,50,255};
-            if(i==0 && b->back_n==0) col=(SDL_Color){150,150,150,255};
-            if(i==1 && b->fwd_n==0) col=(SDL_Color){150,150,150,255};
-            SDL_Surface *s=TTF_RenderUTF8_Blended(bf,btns[i].label,col);
-            if(s){ SDL_Texture *t=SDL_CreateTextureFromSurface(ren,s); SDL_Rect tr={btns[i].r.x+(btns[i].r.w - s->w)/2, btns[i].r.y+(btns[i].r.h - s->h)/2, s->w,s->h}; SDL_RenderCopy(ren,t,NULL,&tr); SDL_DestroyTexture(t); SDL_FreeSurface(s); }
-        }
-    }
+    SDL_Rect go = {ar.x+ar.w+8, 6, 52, GUI_TOOLBAR_H-12};
 
-    SDL_SetRenderDrawColor(ren,255,255,255,255);
-    SDL_RenderFillRect(ren,&ar);
-    if(b->addr_focused) SDL_SetRenderDrawColor(ren,66,133,244,255); else SDL_SetRenderDrawColor(ren,180,180,180,255);
-    SDL_RenderDrawRect(ren,&ar);
+    if(b->addr_focused) stroke_rrect(ren,ar.x,ar.y,ar.w,ar.h,ar.h/2.0f,2.0f,C_BLUE,C_WHITE);
+    else                fill_rrect(ren,ar.x,ar.y,ar.w,ar.h,ar.h/2.0f,C_PILL);
 
-    if(b->addr_text){
-        TTF_Font *af = gui_get_font(13,false,false,false);
-        if(af){
-            SDL_Color tc={30,30,30,255};
-
-            int maxw = ar.w - 10;
-
-            int tw=0, th=0; TTF_SizeUTF8(af,b->addr_text,&tw,&th);
-            int start_x = ar.x+5;
-            int offset=0;
-            if(tw>maxw){
-
+    {
+        const int ASZ=14, PADX=16;
+        int maxw = ar.w - 2*PADX;
+        float start_x = ar.x + PADX;
+        SDL_Rect clip={ar.x+PADX-2, ar.y+2, ar.w-2*PADX+4, ar.h-4};
+        SDL_RenderSetClipRect(ren,&clip);
+        if(b->addr_text && *b->addr_text){
+            int tw=text_width(b->addr_text,ASZ,false), offset=0;
+            if(tw>maxw && b->addr_focused){
                 char *pre = xstrndup(b->addr_text,b->addr_cursor);
-                int prew=0; TTF_SizeUTF8(af,pre,&prew,NULL); free(pre);
+                int prew=text_width(pre,ASZ,false); free(pre);
                 if(prew > maxw-10) offset = prew - (maxw-10);
             }
-
-            SDL_Rect clip=ar; clip.x+=2; clip.w-=4; clip.y+=2; clip.h-=4;
-            SDL_RenderSetClipRect(ren,&clip);
-            SDL_Surface *s=TTF_RenderUTF8_Blended(af,b->addr_text,tc);
-            if(s){
-                SDL_Texture *t=SDL_CreateTextureFromSurface(ren,s);
-                SDL_Rect dst={start_x - offset, ar.y + (ar.h - s->h)/2, s->w, s->h};
-                SDL_RenderCopy(ren,t,NULL,&dst);
-
-                if(b->addr_focused){
-                    Uint32 now=SDL_GetTicks();
-                    if((now/500)%2==0){
-                        char *pre = xstrndup(b->addr_text,b->addr_cursor);
-                        int prew=0; TTF_SizeUTF8(af,pre,&prew,NULL); free(pre);
-                        int cx = start_x - offset + prew;
-                        SDL_SetRenderDrawColor(ren,30,30,30,255);
-                        SDL_RenderDrawLine(ren,cx, ar.y+6, cx, ar.y+ar.h-6);
-                    }
-                }
-                SDL_DestroyTexture(t); SDL_FreeSurface(s);
+            draw_text(ren,b->addr_text,ASZ,false,C_TEXT,start_x-offset,ar.y,0,ar.h);
+            if(b->addr_focused && (SDL_GetTicks()/500)%2==0){
+                char *pre = xstrndup(b->addr_text,b->addr_cursor);
+                int prew=text_width(pre,ASZ,false); free(pre);
+                float cx = start_x - offset + prew;
+                thick_line(ren,cx,ar.y+8,cx,ar.y+ar.h-8,1.2f,C_TEXT);
             }
-            SDL_RenderSetClipRect(ren,NULL);
+        } else {
+            draw_text(ren,"Search or enter address",ASZ,false,C_HINT,start_x,ar.y,0,ar.h);
         }
+        SDL_RenderSetClipRect(ren,NULL);
     }
+
+    fill_rrect(ren,go.x,go.y,go.w,go.h,go.h/2.0f,C_BLUE);
+    draw_text(ren,"Go",14,true,C_WHITE,go.x,go.y,go.w,go.h);
 
     SDL_Rect content_bg={0,GUI_TOOLBAR_H, b->win_w, b->win_h-GUI_TOOLBAR_H-GUI_STATUS_H};
     SDL_SetRenderDrawColor(ren, body_bg.r, body_bg.g, body_bg.b, 255);
@@ -1863,21 +1939,22 @@ static void render_browser(BrowserState *b){
         int draw_y = cmd->y - b->scroll_y;
         if(draw_y + cmd->h < b->lctx.content_y || draw_y > b->lctx.content_y + b->lctx.content_h) continue;
         if(!cmd->tex){
-            TTF_Font *f=gui_get_font(cmd->font_size, cmd->bold, cmd->italic, cmd->mono);
+            TTF_Font *f=gui_get_render_font(cmd->font_size, cmd->bold, cmd->italic, cmd->mono);
             if(!f) continue;
             SDL_Surface *s=TTF_RenderUTF8_Blended(f, cmd->text, cmd->color);
             if(!s) continue;
             cmd->tex=SDL_CreateTextureFromSurface(ren,s);
             cmd->tex_w=s->w; cmd->tex_h=s->h;
-            cmd->w=s->w; cmd->h=s->h;
+            cmd->w=(int)ceilf(s->w/g_dpi); cmd->h=(int)ceilf(s->h/g_dpi);
             SDL_FreeSurface(s);
         }
         if(cmd->tex){
-            SDL_Rect dst={cmd->x, draw_y, cmd->tex_w, cmd->tex_h};
-            SDL_RenderCopy(ren,cmd->tex,NULL,&dst);
+            SDL_FRect dst={(float)cmd->x, (float)draw_y, cmd->tex_w/g_dpi, cmd->tex_h/g_dpi};
+            SDL_RenderCopyF(ren,cmd->tex,NULL,&dst);
             if(cmd->underline){
                 SDL_SetRenderDrawColor(ren, cmd->color.r, cmd->color.g, cmd->color.b, 255);
-                SDL_RenderDrawLine(ren, dst.x, dst.y+dst.h-1, dst.x+dst.w, dst.y+dst.h-1);
+                float uy = dst.y + dst.h - 2.0f;
+                SDL_RenderDrawLineF(ren, dst.x, uy, dst.x+dst.w, uy);
             }
         }
     }
@@ -1887,29 +1964,22 @@ static void render_browser(BrowserState *b){
         int bar_h = content_bg.h;
         float ratio = (float)b->lctx.content_h / (float)b->total_h;
         int thumb_h = (int)(bar_h * ratio);
-        if(thumb_h<24) thumb_h=24;
+        if(thumb_h<32) thumb_h=32;
         if(thumb_h>bar_h) thumb_h=bar_h;
         int max_scroll = b->total_h - b->lctx.content_h;
-        int thumb_y = content_bg.y + (max_scroll? (int)((float)b->scroll_y / max_scroll * (bar_h - thumb_h)) : 0);
-        SDL_Rect track={b->win_w-10, content_bg.y, 10, bar_h};
-        SDL_SetRenderDrawColor(ren,240,240,240,255); SDL_RenderFillRect(ren,&track);
-        SDL_Rect thumb={b->win_w-10, thumb_y, 10, thumb_h};
-        SDL_SetRenderDrawColor(ren,180,180,180,255); SDL_RenderFillRect(ren,&thumb);
-        SDL_SetRenderDrawColor(ren,160,160,160,255); SDL_RenderDrawRect(ren,&thumb);
+        float thumb_y = content_bg.y + (max_scroll? (float)b->scroll_y / max_scroll * (bar_h - thumb_h) : 0);
+        fill_rrect(ren,(float)b->win_w-9,thumb_y+2,6,(float)thumb_h-4,3,(SDL_Color){154,160,166,255});
     }
 
     SDL_Rect status={0,b->win_h-GUI_STATUS_H,b->win_w,GUI_STATUS_H};
-    SDL_SetRenderDrawColor(ren,240,240,240,255); SDL_RenderFillRect(ren,&status);
-    SDL_SetRenderDrawColor(ren,200,200,200,255); SDL_RenderDrawLine(ren,0,b->win_h-GUI_STATUS_H,b->win_w,b->win_h-GUI_STATUS_H);
-    TTF_Font *sf = gui_get_font(11,false,false,false);
-    if(sf){
+    SDL_SetRenderDrawColor(ren,C_BAR.r,C_BAR.g,C_BAR.b,255); SDL_RenderFillRect(ren,&status);
+    SDL_SetRenderDrawColor(ren,C_LINE.r,C_LINE.g,C_LINE.b,255); SDL_RenderDrawLine(ren,0,b->win_h-GUI_STATUS_H,b->win_w,b->win_h-GUI_STATUS_H);
+    {
         const char *msg = b->hover_href[0]? b->hover_href : b->status_msg;
-        SDL_Color sc={80,80,80,255};
-        SDL_Surface *s=TTF_RenderUTF8_Blended(sf, msg?msg:"", sc);
-        if(s){ SDL_Texture *t=SDL_CreateTextureFromSurface(ren,s); SDL_Rect dst={6, b->win_h-GUI_STATUS_H + (GUI_STATUS_H - s->h)/2, s->w, s->h}; if(dst.w> b->win_w-12) dst.w=b->win_w-12; SDL_RenderCopy(ren,t,NULL,&dst); SDL_DestroyTexture(t); SDL_FreeSurface(s); }
-
-        char right[128]; snprintf(right,sizeof(right), "%zu items | %d%%", b->lctx.ncmd, b->total_h? (int)(100*b->scroll_y/(b->total_h - b->lctx.content_h + 1)):0);
-
+        SDL_Rect sclip={0,status.y+1,b->win_w-8,status.h-1};
+        SDL_RenderSetClipRect(ren,&sclip);
+        draw_text(ren,msg?msg:"",12,false,(SDL_Color){95,99,104,255},8,(float)status.y,0,(float)status.h);
+        SDL_RenderSetClipRect(ren,NULL);
     }
 
     SDL_RenderPresent(ren);
@@ -1981,7 +2051,8 @@ int run_gui(const char *initial_url){
     if(TTF_Init()!=0){ fprintf(stderr,"TTF_Init: %s\n", TTF_GetError()); SDL_Quit(); return 1; }
     BrowserState b={0};
     b.win_w=1024; b.win_h=720;
-    b.win = SDL_CreateWindow("C Web Browser", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, b.win_w,b.win_h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,"linear");
+    b.win = SDL_CreateWindow("C Web Browser", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, b.win_w,b.win_h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
     if(!b.win){ fprintf(stderr,"CreateWindow: %s\n", SDL_GetError()); TTF_Quit(); SDL_Quit(); return 1; }
     b.ren = SDL_CreateRenderer(b.win,-1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if(!b.ren){ b.ren = SDL_CreateRenderer(b.win,-1, SDL_RENDERER_SOFTWARE); if(!b.ren){ fprintf(stderr,"Renderer: %s\n", SDL_GetError()); SDL_DestroyWindow(b.win); TTF_Quit(); SDL_Quit(); return 1; } }
@@ -1991,6 +2062,7 @@ int run_gui(const char *initial_url){
     addr_set_text(&b,b.current_url);
     browser_set_status(&b,"Ready");
     gui_find_font_paths();
+    update_dpi(&b);
 
     browser_navigate(&b, initial_url?initial_url:"about:blank", false);
 
@@ -2019,9 +2091,9 @@ int run_gui(const char *initial_url){
                     } else if(point_in_rect(mx,my,ar)){
                         b.addr_focused=true; SDL_StartTextInput();
 
-                        TTF_Font *af=gui_get_font(13,false,false,false);
+                        TTF_Font *af=gui_get_font(14,false,false,false);
                         if(af){
-                            int rel = mx - (ar.x+5);
+                            int rel = mx - (ar.x+16);
 
                             int best=0, bestdist=10000;
                             for(size_t i=0;i<=b.addr_len;i++){

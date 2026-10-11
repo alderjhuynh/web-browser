@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "fetch.h"
 #include "utils.h"
+#include "search.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,10 +87,38 @@ char *fetch_url(const char *url, size_t *out_len) {
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    const char *insecure = getenv("BROWSER_INSECURE_TLS");
+    if (insecure && *insecure == '1') {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+
+    static CURLSH *share = NULL;
+    if (!share) {
+        share = curl_share_init();
+        if (share) {
+            curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_COOKIE);
+            curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+            curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+        }
+    }
+    if (share) curl_easy_setopt(curl, CURLOPT_SHARE, share);
+    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "");
+
+    struct curl_slist *hdrs = NULL;
+    const char *auth = search_auth_header_for_url(url);
+    if (auth) {
+        hdrs = curl_slist_append(hdrs, auth);
+        hdrs = curl_slist_append(hdrs, "Accept: application/json");
+    } else {
+        hdrs = curl_slist_append(hdrs, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+    }
+    hdrs = curl_slist_append(hdrs, "Accept-Language: en-US,en;q=0.9");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+
     CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(hdrs);
     if (res != CURLE_OK) {
         fprintf(stderr,"fetch %s failed: %s\n", url, curl_easy_strerror(res));
         free(chunk.data);
@@ -132,6 +161,19 @@ char *fetch_url(const char *url, size_t *out_len) {
         }
     }
     curl_easy_cleanup(curl);
+
+    size_t html_len = 0;
+    char *html = search_render_json(url, chunk.data, chunk.size, &html_len);
+    if (html) {
+        free(chunk.data);
+        if (out_len) *out_len = html_len;
+        return html;
+    }
+    if (code == 401 || code == 403 || code == 422) {
+        if (search_auth_header_for_url(url)) {
+            fprintf(stderr,"fetch: search API rejected the request (http %ld). Check BRAVE_API_KEY.\n", code);
+        }
+    }
     if (out_len) *out_len = chunk.size;
     return chunk.data;
 }

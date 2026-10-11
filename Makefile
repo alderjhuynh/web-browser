@@ -6,7 +6,7 @@ LDLIBS = -lcurl -lm
 SDL_CFLAGS := $(shell pkg-config --cflags sdl2 SDL2_ttf SDL2_image 2>/dev/null || sdl2-config --cflags 2>/dev/null)
 SDL_LIBS   := $(shell pkg-config --libs sdl2 SDL2_ttf SDL2_image 2>/dev/null || sdl2-config --libs 2>/dev/null; pkg-config --libs SDL2_ttf 2>/dev/null; pkg-config --libs SDL2_image 2>/dev/null)
 
-SRC = utils.c dom.c parser.c css.c color.c style.c fetch.c layout.c gui.c image.c main.c
+SRC = utils.c dom.c parser.c css.c color.c style.c search.c fetch.c layout.c gui.c image.c main.c
 OBJ = $(SRC:.c=.o)
 BIN = browser
 GUI_BIN = browser-gui
